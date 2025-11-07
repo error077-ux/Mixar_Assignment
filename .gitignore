@@ -10,3 +10,7 @@ ENV/
 .vscode/
 *.swp
 .DS_Store
+# Ignore runtime outputs and generated mesh files
+outputs/
+testing_output/
+*.ply

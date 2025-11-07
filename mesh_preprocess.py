@@ -5,7 +5,6 @@ import trimesh
 import matplotlib.pyplot as plt
 import csv
 
-# ---------- HELPER FUNCTIONS ----------
 def load_vertices(path):
     mesh = trimesh.load(path, process=False)
     return np.asarray(mesh.vertices), mesh
@@ -51,7 +50,6 @@ def mse(a, b):
 def mae(a, b):
     return np.mean(np.abs(a - b))
 
-# ---------- PIPELINE ----------
 def process_mesh(mesh_path, n_bins=1024):
     vertices, mesh_obj = load_vertices(mesh_path)
     mesh_name = os.path.basename(mesh_path)
@@ -72,9 +70,8 @@ def process_mesh(mesh_path, n_bins=1024):
             reconstructed = unit_sphere_denormalize(deq, meta)
 
         err_mse, err_mae = mse(vertices, reconstructed), mae(vertices, reconstructed)
-        print(f"{method} → MSE={err_mse:.8f}, MAE={err_mae:.8f}")
+        print(f"{method} -> MSE={err_mse:.8f}, MAE={err_mae:.8f}")
 
-        # Save reconstructed mesh
         out_name = f"reconstructed_{method}_{os.path.splitext(mesh_name)[0]}.ply"
         mesh_obj.vertices = reconstructed
         mesh_obj.export(out_name)
@@ -88,7 +85,6 @@ def process_mesh(mesh_path, n_bins=1024):
 
     return results
 
-# ---------- MAIN LOOP ----------
 def run_all(mesh_dir="meshes", n_bins=1024):
     all_results = []
     obj_files = [f for f in os.listdir(mesh_dir) if f.endswith(".obj")]
@@ -98,17 +94,13 @@ def run_all(mesh_dir="meshes", n_bins=1024):
         results = process_mesh(mesh_path, n_bins)
         all_results.extend(results)
 
-    # Write summary CSV
     with open("results_summary.csv", "w", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=["mesh", "method", "mse", "mae"])
         writer.writeheader()
         writer.writerows(all_results)
 
-    print("\n✅ All meshes processed! Summary saved to results_summary.csv")
-    for res in all_results:
-        print(f"{res['mesh']:15} | {res['method']:10} | MSE={res['mse']:.8f} | MAE={res['mae']:.8f}")
+    print("\nAll meshes processed successfully. Summary saved to results_summary.csv")
 
-# ---------- ENTRY POINT ----------
 if __name__ == "__main__":
     mesh_dir = "meshes"
     if len(sys.argv) > 1:

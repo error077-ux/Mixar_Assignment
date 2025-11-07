@@ -1,144 +1,138 @@
 """
-Bonus Task: Option 2 - Rotation & Translation Invariance + Adaptive Quantization
+Adaptive Quantization Experiment
+--------------------------------
+Implements rotation + translation invariant normalization
+and adaptive quantization based on vertex density.
+All results and plots are saved in the outputs/ folder.
 """
 
-import trimesh
+import os
 import numpy as np
+import trimesh
 import matplotlib.pyplot as plt
+from scipy.spatial import cKDTree
 
-# ---------- Utilities ----------
-def unit_sphere_normalize(vertices):
+# Ensure output folder exists
+os.makedirs("outputs", exist_ok=True)
+
+def load_vertices(path):
+    mesh = trimesh.load(path, process=False)
+    return np.asarray(mesh.vertices), mesh
+
+def normalize_unit_sphere(vertices):
+    """Normalize vertices into unit sphere coordinates."""
     centroid = vertices.mean(axis=0)
     centered = vertices - centroid
     radius = np.max(np.linalg.norm(centered, axis=1))
     normalized = centered / radius
-    return normalized, {"centroid": centroid, "radius": radius}
+    return normalized, centroid, radius
 
-def unit_sphere_denormalize(normalized, meta):
-    return normalized * meta["radius"] + meta["centroid"]
+def denormalize_unit_sphere(vertices, centroid, radius):
+    """Restore vertices back to original space."""
+    return vertices * radius + centroid
 
-def quantize_uniform(values, n_bins=1024, input_range=(-1, 1)):
-    a, b = input_range
-    mapped = (values - a) / (b - a)
-    q = np.floor(mapped * (n_bins - 1)).astype(np.int32)
-    return q
-
-def dequantize_uniform(q, n_bins=1024, output_range=(-1, 1)):
-    a, b = output_range
-    mapped = q / (n_bins - 1)
-    return mapped * (b - a) + a
-
-# ---------- Adaptive Quantization ----------
-def adaptive_quantize(values, densities, base_bins=1024, input_range=(-1, 1)):
-    """
-    values: normalized coordinates
-    densities: local vertex densities (inverse of avg distance)
-    """
-    a, b = input_range
-    mapped = (values - a) / (b - a)
-    mapped = np.clip(mapped, 0, 1)
-    # normalize densities to [0.5, 1.5] bin scaling
-    density_scale = (densities - densities.min()) / (densities.max() - densities.min() + 1e-9)
-    bin_scale = 0.5 + density_scale  # 0.5 to 1.5 range
-    adaptive_bins = np.clip((base_bins * bin_scale).astype(int), 128, 2048)
-    # quantize each vertex adaptively
-    q = np.floor(mapped * (adaptive_bins[:, None] - 1)).astype(np.int32)
-    return q, adaptive_bins
-
-def adaptive_dequantize(q, adaptive_bins, output_range=(-1, 1)):
-    a, b = output_range
-    mapped = q / (adaptive_bins[:, None] - 1)
-    return mapped * (b - a) + a
-
-# ---------- Local Density ----------
-def compute_local_density(vertices, k=10):
-    from scipy.spatial import cKDTree
+def adaptive_quantize(vertices, n_bins=1024, k=10):
+    """Adaptive quantization based on local vertex density."""
     tree = cKDTree(vertices)
     dists, _ = tree.query(vertices, k=k)
-    mean_dists = dists.mean(axis=1)
-    density = 1.0 / (mean_dists + 1e-9)
-    return density
+    density = 1.0 / (np.mean(dists, axis=1) + 1e-8)
+    density_norm = (density - density.min()) / (density.max() - density.min() + 1e-8)
+    adaptive_bins = (n_bins * (0.5 + 0.5 * density_norm)).astype(int)
+    adaptive_bins = np.clip(adaptive_bins, 16, n_bins)
 
-# ---------- Transformations ----------
-def random_transform(vertices):
-    # Random rotation matrix
-    angle = np.random.uniform(0, 2 * np.pi)
-    axis = np.random.randn(3)
-    axis /= np.linalg.norm(axis)
-    K = np.array([
-        [0, -axis[2], axis[1]],
-        [axis[2], 0, -axis[0]],
-        [-axis[1], axis[0], 0]
-    ])
-    R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-    rotated = vertices @ R.T
-    # Random translation
-    t = np.random.uniform(-0.2, 0.2, size=(1, 3))
-    translated = rotated + t
-    return translated
+    quantized = []
+    for i in range(vertices.shape[0]):
+        v = np.clip(vertices[i], -1, 1)
+        bin_size = 2 / adaptive_bins[i]
+        q = np.floor((v + 1) / bin_size) * bin_size - 1
+        quantized.append(q)
+    return np.array(quantized)
 
-# ---------- Error ----------
+def uniform_quantize(vertices, n_bins=1024):
+    """Simple uniform quantization."""
+    v = np.clip(vertices, -1, 1)
+    bin_size = 2 / n_bins
+    q = np.floor((v + 1) / bin_size) * bin_size - 1
+    return q
+
 def mse(a, b):
     return np.mean((a - b) ** 2)
 
-# ---------- Main ----------
+def generate_transforms(vertices, num_versions=5):
+    """Generate rotated & translated versions of the mesh."""
+    versions = []
+    for _ in range(num_versions):
+        theta = np.random.rand() * 2 * np.pi
+        axis = np.random.randn(3)
+        axis /= np.linalg.norm(axis)
+        c, s = np.cos(theta), np.sin(theta)
+        x, y, z = axis
+        R = np.array([
+            [c + x*x*(1-c), x*y*(1-c)-z*s, x*z*(1-c)+y*s],
+            [y*x*(1-c)+z*s, c + y*y*(1-c), y*z*(1-c)-x*s],
+            [z*x*(1-c)-y*s, z*y*(1-c)+x*s, c + z*z*(1-c)]
+        ])
+        t = np.random.uniform(-0.1, 0.1, 3)
+        v_new = vertices @ R.T + t
+        versions.append(v_new)
+    return versions
+
 def main():
-    mesh = trimesh.load("meshes/branch.obj", process=False)
-    vertices = np.asarray(mesh.vertices)
+    mesh_path = "meshes/branch.obj"
+    vertices, mesh = load_vertices(mesh_path)
 
-    uniform_errors = []
-    adaptive_errors = []
+    print(f"Loaded mesh with {len(vertices)} vertices for adaptive quantization test.")
 
-    for i in range(5):  # generate 5 random transformations
-        transformed = random_transform(vertices)
-        normalized, meta = unit_sphere_normalize(transformed)
+    versions = generate_transforms(vertices, num_versions=5)
+    uniform_mses, adaptive_mses = [], []
 
-        # Uniform Quantization
-        q_uniform = quantize_uniform(normalized)
-        deq_uniform = dequantize_uniform(q_uniform)
-        recon_uniform = unit_sphere_denormalize(deq_uniform, meta)
+    for i, v in enumerate(versions, 1):
+        normalized, centroid, radius = normalize_unit_sphere(v)
+        uniform_q = uniform_quantize(normalized)
+        adaptive_q = adaptive_quantize(normalized)
 
-        # Adaptive Quantization
-        densities = compute_local_density(normalized)
-        q_adapt, bins_adapt = adaptive_quantize(normalized, densities)
-        deq_adapt = adaptive_dequantize(q_adapt, bins_adapt)
-        recon_adapt = unit_sphere_denormalize(deq_adapt, meta)
+        recon_uniform = denormalize_unit_sphere(uniform_q, centroid, radius)
+        recon_adaptive = denormalize_unit_sphere(adaptive_q, centroid, radius)
 
-        # Errors
-        err_uniform = mse(transformed, recon_uniform)
-        err_adaptive = mse(transformed, recon_adapt)
-        uniform_errors.append(err_uniform)
-        adaptive_errors.append(err_adaptive)
+        mse_u = mse(v, recon_uniform)
+        mse_a = mse(v, recon_adaptive)
 
-        print(f"Version {i+1}: Uniform MSE={err_uniform:.6e}, Adaptive MSE={err_adaptive:.6e}")
+        uniform_mses.append(mse_u)
+        adaptive_mses.append(mse_a)
 
-    # Plot Comparison
-    plt.figure(figsize=(6, 4))
-    x = np.arange(5)
-    plt.bar(x - 0.15, uniform_errors, width=0.3, label="Uniform Quantization")
-    plt.bar(x + 0.15, adaptive_errors, width=0.3, label="Adaptive Quantization")
-    plt.xlabel("Transformed Mesh Versions")
-    plt.ylabel("Reconstruction MSE")
-    plt.title("Uniform vs Adaptive Quantization Error")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("adaptive_vs_uniform_error.png")
-    plt.show()
+        print(f"Version {i}: Uniform MSE={mse_u:.6e}, Adaptive MSE={mse_a:.6e}")
 
-    # Summary
-    avg_uniform = np.mean(uniform_errors)
-    avg_adaptive = np.mean(adaptive_errors)
-    print("\nAverage Uniform MSE:", avg_uniform)
-    print("Average Adaptive MSE:", avg_adaptive)
+    avg_uniform = np.mean(uniform_mses)
+    avg_adaptive = np.mean(adaptive_mses)
+
+    print(f"\nAverage Uniform MSE: {avg_uniform}")
+    print(f"Average Adaptive MSE: {avg_adaptive}")
 
     # Save results
-    with open("adaptive_results.txt", "w") as f:
-        f.write("Uniform MSEs:\n" + str(uniform_errors) + "\n")
-        f.write("Adaptive MSEs:\n" + str(adaptive_errors) + "\n")
+    results_path = os.path.join("outputs", "adaptive_results.txt")
+    with open(results_path, "w") as f:
+        f.write("Adaptive Quantization Experiment Results\n")
+        f.write("----------------------------------------\n")
+        for i in range(len(uniform_mses)):
+            f.write(f"Version {i+1}: Uniform={uniform_mses[i]:.6e}, Adaptive={adaptive_mses[i]:.6e}\n")
         f.write(f"\nAverage Uniform MSE: {avg_uniform}\n")
         f.write(f"Average Adaptive MSE: {avg_adaptive}\n")
 
-    print("✅ Results saved to adaptive_results.txt and plot saved as adaptive_vs_uniform_error.png")
+    # Save plot
+    plt.figure(figsize=(7, 5))
+    plt.plot(uniform_mses, label="Uniform Quantization", marker="o")
+    plt.plot(adaptive_mses, label="Adaptive Quantization", marker="s")
+    plt.xlabel("Mesh Version")
+    plt.ylabel("MSE")
+    plt.title("Uniform vs Adaptive Quantization Error")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join("outputs", "adaptive_vs_uniform_error.png"))
+    plt.close()
+
+    print("Adaptive Quantization Experiment completed successfully.")
+    print(f"Results saved to {results_path}")
 
 if __name__ == "__main__":
     main()
